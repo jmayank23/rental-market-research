@@ -1,0 +1,21 @@
+# Secrets
+.env
+
+# Generated data & model artifacts
+*.json
+*.joblib
+*.csv
+
+# Experiments
+experiments/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Editor
+.claude/
