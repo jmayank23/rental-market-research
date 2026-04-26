@@ -46,6 +46,8 @@ Get an API key from the [RentCast API Dashboard](https://app.rentcast.io/app/api
 
 ## Usage
 
+### 1. Fetch listings
+
 ```bash
 uv run python fetch_listings.py
 ```
@@ -56,32 +58,30 @@ This will:
 
 Results are paginated automatically (up to 500 per request) until all listings are retrieved.
 
-**Process sale listings**:
-
-```bash
-uv run python process_listings.py
-```
-
-This enriches `sale_listings.json` with the following fields per listing:
-- `monthlyMortgage` — estimated monthly payment on a 30-year fixed mortgage
-- `predictedRent` — Random Forest rent estimate (requires `rent_model.joblib`)
-- `predictedRentMin` — lower bound: `predictedRent × (1 − MAPE)`
-- `predictedRentMax` — upper bound: `predictedRent × (1 + MAPE)`
-- `mortgageCoverageRatio` — `predictedRentMin / monthlyMortgage` (higher = better cash flow)
-
-Also exports `selected_properties.csv` — listings passing all filters in `constants.py`, sorted by `mortgageCoverageRatio` descending.
-
-Run `uv run python rent_model.py` first to generate `rent_model.joblib` and `rent_model_metrics.json`.
-
-**Train the rent estimator** (uses `rental_listings.json` with an 80/20 train/val split):
+### 2. Train the rent estimator
 
 ```bash
 uv run python rent_model.py
 ```
 
-Tunes Random Forest hyperparameters via `RandomizedSearchCV` (5-fold CV, 20 candidates) on the training split, then trains the final model with the best params and prints validation metrics (MAE, RMSE, MAPE, R²). Writes:
+Uses `rental_listings.json` with an 80/20 train/val split. Tunes Random Forest hyperparameters via `RandomizedSearchCV` (5-fold CV, 20 candidates) on the training split, then trains the final model with the best params and prints validation metrics (MAE, RMSE, MAPE, R²). Writes:
 - `rent_model.joblib` — fitted sklearn Pipeline ready for inference
 - `rent_model_metrics.json` — best hyperparams, validation metrics, model config, and training metadata
+
+### 3. Process sale listings
+
+```bash
+uv run python process_listings.py
+```
+
+Enriches `sale_listings.json` with the following fields per listing (using the trained `rent_model.joblib`):
+- `monthlyMortgage` — estimated monthly payment on a 30-year fixed mortgage
+- `predictedRent` — Random Forest rent estimate
+- `predictedRentMin` — lower bound: `predictedRent × (1 − MAPE)`
+- `predictedRentMax` — upper bound: `predictedRent × (1 + MAPE)`
+- `mortgageCoverageRatio` — `predictedRentMin / monthlyMortgage` (higher = better cash flow)
+
+Also exports `selected_properties.csv` — listings passing all filters in `constants.py`, sorted by `mortgageCoverageRatio` descending.
 
 ## Configuration
 
