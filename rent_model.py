@@ -17,6 +17,7 @@ import json
 from datetime import datetime, timezone
 
 import joblib
+import numpy as np
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import RandomizedSearchCV, train_test_split
 from sklearn.pipeline import Pipeline
@@ -98,6 +99,20 @@ def train(rental_path: str = "rental_listings.json") -> None:
         "r2": round(raw["r2"], 4),
     }
 
+    # Residual quantiles for honest prediction intervals.
+    # Defined as (actual - predicted) / predicted on the val split, so
+    # downstream code can build bounds via prediction * (1 + q).
+    rel_residuals = (y_val.to_numpy() - preds) / preds
+    residuals = {
+        "q10": round(float(np.quantile(rel_residuals, 0.10)), 4),
+        "q50": round(float(np.quantile(rel_residuals, 0.50)), 4),
+        "q90": round(float(np.quantile(rel_residuals, 0.90)), 4),
+    }
+    print(
+        f"  Residual band (val):                "
+        f"q10={residuals['q10']:+.3f}, q50={residuals['q50']:+.3f}, q90={residuals['q90']:+.3f}"
+    )
+
     joblib.dump(pipeline, MODEL_PATH)
     print(f"\nModel saved → {MODEL_PATH}")
 
@@ -113,6 +128,7 @@ def train(rental_path: str = "rental_listings.json") -> None:
         "target": TARGET,
         "best_params": best_params,
         "val_metrics": metrics,
+        "residual_quantiles": residuals,
     }
     with open(METRICS_PATH, "w") as f:
         json.dump(record, f, indent=2)

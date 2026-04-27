@@ -56,14 +56,28 @@ def is_selected(listing: dict) -> bool:
     return True
 
 
+def _load_band(metrics_path: str) -> tuple[float, float]:
+    """Return (low_offset, high_offset) so bounds = pred * (1 + offset).
+
+    Prefers val-set residual quantiles if recorded; falls back to ±MAPE for
+    older metrics files.
+    """
+    with open(metrics_path) as f:
+        record = json.load(f)
+    quantiles = record.get("residual_quantiles")
+    if quantiles is not None:
+        return quantiles["q10"], quantiles["q90"]
+    mape = record["val_metrics"]["mape"] / 100
+    return -mape, mape
+
+
 def add_predicted_rent(
     listings: list[dict],
     model_path: str = "rent_model.joblib",
     metrics_path: str = "rent_model_metrics.json",
 ) -> list[dict]:
     pipeline = joblib.load(model_path)
-    with open(metrics_path) as f:
-        mape = json.load(f)["val_metrics"]["mape"] / 100  # % → fraction
+    low_offset, high_offset = _load_band(metrics_path)
 
     df = pd.DataFrame(listings)
     for col in FEATURES:
@@ -84,8 +98,8 @@ def add_predicted_rent(
             continue
         p = float(next(pred_iter))
         listing["predictedRent"] = round(p)
-        listing["predictedRentMin"] = round(p * (1 - mape))
-        listing["predictedRentMax"] = round(p * (1 + mape))
+        listing["predictedRentMin"] = max(0, round(p * (1 + low_offset)))
+        listing["predictedRentMax"] = max(0, round(p * (1 + high_offset)))
 
     return listings
 

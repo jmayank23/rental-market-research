@@ -97,3 +97,64 @@ def test_add_predicted_rent_handles_no_eligible_rows():
         assert listing["predictedRent"] is None
         assert listing["predictedRentMin"] is None
         assert listing["predictedRentMax"] is None
+
+
+def _viable_listing():
+    return {"bedrooms": 3, "bathrooms": 2, "squareFootage": 1500, "latitude": 33.7, "longitude": -112.1}
+
+
+def test_bounds_use_residual_quantiles_when_present():
+    """Newer metrics files supply asymmetric residual quantiles."""
+    listings = [_viable_listing()]
+    metrics = {
+        "val_metrics": {"mape": 14.5},
+        "residual_quantiles": {"q10": -0.20, "q50": 0.0, "q90": 0.30},
+    }
+    with patch("process_listings.joblib.load", return_value=_StubPipeline()):
+        with patch("builtins.open"):
+            with patch("process_listings.json.load", return_value=metrics):
+                add_predicted_rent(listings)
+    # 2000 * (1 - 0.20) = 1600, 2000 * (1 + 0.30) = 2600
+    assert listings[0]["predictedRentMin"] == 1600
+    assert listings[0]["predictedRent"] == 2000
+    assert listings[0]["predictedRentMax"] == 2600
+
+
+def test_bounds_fall_back_to_mape_for_legacy_metrics():
+    """Older metrics files (no residual_quantiles) still work via ±MAPE."""
+    listings = [_viable_listing()]
+    metrics = {"val_metrics": {"mape": 10.0}}
+    with patch("process_listings.joblib.load", return_value=_StubPipeline()):
+        with patch("builtins.open"):
+            with patch("process_listings.json.load", return_value=metrics):
+                add_predicted_rent(listings)
+    assert listings[0]["predictedRentMin"] == 1800
+    assert listings[0]["predictedRentMax"] == 2200
+
+
+def test_bounds_are_non_negative_when_q10_below_minus_one():
+    """Defensive: degenerate q10 < -1 must not produce negative bounds."""
+    listings = [_viable_listing()]
+    metrics = {
+        "val_metrics": {"mape": 14.5},
+        "residual_quantiles": {"q10": -1.5, "q50": 0.0, "q90": 0.3},
+    }
+    with patch("process_listings.joblib.load", return_value=_StubPipeline()):
+        with patch("builtins.open"):
+            with patch("process_listings.json.load", return_value=metrics):
+                add_predicted_rent(listings)
+    assert listings[0]["predictedRentMin"] == 0
+
+
+def test_bounds_bracket_prediction_in_normal_case():
+    listings = [_viable_listing()]
+    metrics = {
+        "val_metrics": {"mape": 14.5},
+        "residual_quantiles": {"q10": -0.15, "q50": 0.0, "q90": 0.20},
+    }
+    with patch("process_listings.joblib.load", return_value=_StubPipeline()):
+        with patch("builtins.open"):
+            with patch("process_listings.json.load", return_value=metrics):
+                add_predicted_rent(listings)
+    pred = listings[0]["predictedRent"]
+    assert listings[0]["predictedRentMin"] <= pred <= listings[0]["predictedRentMax"]
