@@ -77,9 +77,16 @@ PARAM_DISTRIBUTIONS = {
 
 def _make_model(name: str, **params):
     if name == "rf":
+        # RF parallelizes via joblib; safe to use all cores when running solo.
+        # During RandomizedSearchCV (which sets n_jobs=-1 outer), the inner
+        # parallelism is suppressed by joblib's worker hand-off.
         return RandomForestRegressor(**params, random_state=RANDOM_STATE, n_jobs=-1)
     if name == "lgbm":
-        return LGBMRegressor(**params, random_state=RANDOM_STATE, n_jobs=-1, verbose=-1)
+        # LightGBM uses OpenMP threads internally. Stacking that under joblib's
+        # process-level parallelism (n_jobs=-1 in RandomizedSearchCV) causes
+        # oversubscription / deadlocks. Pin LGBM to single-threaded; let the
+        # outer search parallelize across CV candidates.
+        return LGBMRegressor(**params, random_state=RANDOM_STATE, n_jobs=1, verbose=-1)
     raise ValueError(f"Unknown model {name!r}; expected one of {list(PARAM_DISTRIBUTIONS)}")
 
 
