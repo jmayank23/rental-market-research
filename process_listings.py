@@ -15,7 +15,7 @@ from constants import (
     PROPERTY_TYPES,
     YEAR_MIN,
 )
-from rent_estimation_utils import FEATURES
+from rent_estimation_utils import FEATURES, REQUIRED_FEATURES
 
 
 def haversine_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -66,34 +66,26 @@ def add_predicted_rent(
         mape = json.load(f)["val_metrics"]["mape"] / 100  # % → fraction
 
     df = pd.DataFrame(listings)
-
-    # Ensure all feature columns exist (some may be absent in sale listings)
     for col in FEATURES:
         if col not in df.columns:
             df[col] = None
 
-    required = ["bedrooms", "bathrooms", "squareFootage", "latitude", "longitude"]
-    has_features = df[required].notna().all(axis=1)
+    has_features = df[REQUIRED_FEATURES].notna().all(axis=1).to_numpy()
+    feat_df = df[FEATURES]
 
-    feat_df = df[FEATURES].copy()
-    feat_df["lotSize"] = feat_df["lotSize"].fillna(feat_df["lotSize"].median())
-    feat_df["yearBuilt"] = feat_df["yearBuilt"].fillna(feat_df["yearBuilt"].median())
-    feat_df["propertyType"] = feat_df["propertyType"].fillna("Unknown")
+    raw_preds = pipeline.predict(feat_df[has_features]) if has_features.any() else []
+    pred_iter = iter(raw_preds)
 
-    preds = pd.Series([None] * len(listings), dtype=object)
-    if has_features.any():
-        preds[has_features] = pipeline.predict(feat_df[has_features])
-
-    for i, listing in enumerate(listings):
-        p = preds[i]
-        if p is None:
+    for listing, ok in zip(listings, has_features):
+        if not ok:
             listing["predictedRent"] = None
             listing["predictedRentMin"] = None
             listing["predictedRentMax"] = None
-        else:
-            listing["predictedRent"] = round(float(p))
-            listing["predictedRentMin"] = round(float(p) * (1 - mape))
-            listing["predictedRentMax"] = round(float(p) * (1 + mape))
+            continue
+        p = float(next(pred_iter))
+        listing["predictedRent"] = round(p)
+        listing["predictedRentMin"] = round(p * (1 - mape))
+        listing["predictedRentMax"] = round(p * (1 + mape))
 
     return listings
 

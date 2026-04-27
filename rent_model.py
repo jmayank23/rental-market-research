@@ -17,9 +17,7 @@ import json
 from datetime import datetime, timezone
 
 import joblib
-import numpy as np
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.metrics import mean_absolute_error, mean_absolute_percentage_error, mean_squared_error, r2_score
 from sklearn.model_selection import RandomizedSearchCV, train_test_split
 from sklearn.pipeline import Pipeline
 
@@ -29,6 +27,7 @@ from rent_estimation_utils import (
     build_transformer,
     load_listings,
     preprocess,
+    print_metrics,
 )
 
 RANDOM_STATE = 42
@@ -90,17 +89,14 @@ def train(rental_path: str = "rental_listings.json") -> None:
     pipeline.fit(X_train, y_train)
 
     preds = pipeline.predict(X_val)
+    print()
+    raw = print_metrics("Validation", y_val, preds)
     metrics = {
-        "mae": round(float(mean_absolute_error(y_val, preds)), 2),
-        "rmse": round(float(np.sqrt(mean_squared_error(y_val, preds))), 2),
-        "mape": round(float(mean_absolute_percentage_error(y_val, preds)) * 100, 3),
-        "r2": round(float(r2_score(y_val, preds)), 4),
+        "mae": round(raw["mae"], 2),
+        "rmse": round(raw["rmse"], 2),
+        "mape": round(raw["mape"], 3),
+        "r2": round(raw["r2"], 4),
     }
-
-    print(f"\n  MAE:  ${metrics['mae']:>8,.2f}")
-    print(f"  RMSE: ${metrics['rmse']:>8,.2f}")
-    print(f"  MAPE:  {metrics['mape']:>7.1f}%")
-    print(f"  R²:    {metrics['r2']:>7.4f}")
 
     joblib.dump(pipeline, MODEL_PATH)
     print(f"\nModel saved → {MODEL_PATH}")

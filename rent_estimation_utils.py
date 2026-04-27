@@ -3,7 +3,9 @@ import json
 import numpy as np
 import pandas as pd
 from sklearn.compose import ColumnTransformer
+from sklearn.impute import SimpleImputer
 from sklearn.metrics import mean_absolute_error, mean_absolute_percentage_error, mean_squared_error, r2_score
+from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 FEATURES = [
@@ -20,6 +22,7 @@ TARGET = "price"
 
 NUM_FEATURES = ["bedrooms", "bathrooms", "squareFootage", "lotSize", "yearBuilt", "latitude", "longitude"]
 CAT_FEATURES = ["propertyType"]
+REQUIRED_FEATURES = ["bedrooms", "bathrooms", "squareFootage", "latitude", "longitude"]
 
 
 def load_listings(path: str) -> pd.DataFrame:
@@ -28,18 +31,29 @@ def load_listings(path: str) -> pd.DataFrame:
 
 
 def preprocess(df: pd.DataFrame) -> pd.DataFrame:
+    """Row-filter only: drop rows missing the target or required features.
+
+    Imputation of optional features (`lotSize`, `yearBuilt`, `propertyType`)
+    happens inside the sklearn Pipeline so train and inference share the
+    same fitted statistics.
+    """
     df = df[FEATURES + [TARGET]].copy()
-    df = df.dropna(subset=[TARGET, "bedrooms", "bathrooms", "squareFootage", "latitude", "longitude"])
-    df["lotSize"] = df["lotSize"].fillna(df["lotSize"].median())
-    df["yearBuilt"] = df["yearBuilt"].fillna(df["yearBuilt"].median())
-    df["propertyType"] = df["propertyType"].fillna("Unknown")
+    df = df.dropna(subset=[TARGET] + REQUIRED_FEATURES)
     return df.reset_index(drop=True)
 
 
 def build_transformer() -> ColumnTransformer:
+    numeric_pipeline = Pipeline([
+        ("impute", SimpleImputer(strategy="median")),
+        ("scale", StandardScaler()),
+    ])
+    categorical_pipeline = Pipeline([
+        ("impute", SimpleImputer(strategy="constant", fill_value="Unknown")),
+        ("encode", OneHotEncoder(handle_unknown="ignore", sparse_output=False)),
+    ])
     return ColumnTransformer([
-        ("num", StandardScaler(), NUM_FEATURES),
-        ("cat", OneHotEncoder(handle_unknown="ignore", sparse_output=False), CAT_FEATURES),
+        ("num", numeric_pipeline, NUM_FEATURES),
+        ("cat", categorical_pipeline, CAT_FEATURES),
     ])
 
 

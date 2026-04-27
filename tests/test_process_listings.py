@@ -1,6 +1,15 @@
 """Tests for process_listings helpers."""
 
-from process_listings import add_distance_to_poi, haversine_miles, monthly_mortgage
+from unittest.mock import patch
+
+import numpy as np
+
+from process_listings import (
+    add_distance_to_poi,
+    add_predicted_rent,
+    haversine_miles,
+    monthly_mortgage,
+)
 
 
 def test_distance_to_poi_handles_none_coords():
@@ -39,3 +48,52 @@ def test_monthly_mortgage_basic():
     # $100k loan @ 6% over 30 years ≈ $599.55
     payment = monthly_mortgage(100_000, annual_rate=0.06)
     assert 595 < payment < 605
+
+
+class _StubPipeline:
+    def predict(self, X):
+        # one prediction per non-null row
+        return np.full(len(X), 2000.0)
+
+
+def test_predictions_align_with_input_index():
+    """Listings missing required features must keep predictedRent=None;
+    listings with required features must get the prediction at their position."""
+    listings = [
+        {"bedrooms": 3, "bathrooms": 2, "squareFootage": 1500, "latitude": 33.7, "longitude": -112.1},
+        {"bedrooms": None},  # missing required
+        {"bedrooms": 4, "bathrooms": 3, "squareFootage": 2000, "latitude": 33.7, "longitude": -112.1},
+        {"latitude": None},  # missing required
+        {"bedrooms": 2, "bathrooms": 1, "squareFootage": 800, "latitude": 33.7, "longitude": -112.1},
+    ]
+    metrics = {"val_metrics": {"mape": 10.0}}
+
+    with patch("process_listings.joblib.load", return_value=_StubPipeline()):
+        with patch("builtins.open"):
+            with patch("process_listings.json.load", return_value=metrics):
+                add_predicted_rent(listings)
+
+    # Positions 0, 2, 4 had required features → predicted
+    assert listings[0]["predictedRent"] == 2000
+    assert listings[2]["predictedRent"] == 2000
+    assert listings[4]["predictedRent"] == 2000
+    # Positions 1, 3 missing required features → None
+    assert listings[1]["predictedRent"] is None
+    assert listings[3]["predictedRent"] is None
+
+
+def test_add_predicted_rent_handles_no_eligible_rows():
+    """If every listing is missing required features, predict() must not be called."""
+    listings = [{"bedrooms": None}, {"bathrooms": None}]
+    metrics = {"val_metrics": {"mape": 10.0}}
+
+    pipeline = _StubPipeline()
+    with patch("process_listings.joblib.load", return_value=pipeline):
+        with patch("builtins.open"):
+            with patch("process_listings.json.load", return_value=metrics):
+                add_predicted_rent(listings)
+
+    for listing in listings:
+        assert listing["predictedRent"] is None
+        assert listing["predictedRentMin"] is None
+        assert listing["predictedRentMax"] is None
