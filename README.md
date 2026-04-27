@@ -76,12 +76,18 @@ Writes to `outputs/<slug>/sale_listings.json` and `outputs/<slug>/rental_listing
 ### 2. Train the rent estimator
 
 ```bash
-uv run python rent_model.py [--poi <slug>]
+uv run python rent_model.py [--poi <slug>] [--model rf|lgbm]
 ```
 
-Uses the rentals fetched for the given POI with an 80/20 train/val split. Tunes Random Forest hyperparameters via `RandomizedSearchCV` (5-fold CV, 20 candidates), then prints validation metrics. Writes:
-- `outputs/<slug>/rent_model.joblib` — fitted sklearn Pipeline (imputers + scaler + OHE + RF)
-- `outputs/<slug>/rent_model_metrics.json` — best hyperparams, val metrics, residual quantiles, training metadata
+Uses the rentals fetched for the given POI with an 80/20 group-aware split (grouped on `formattedAddress` so re-listed properties cannot leak across train/val). Hyperparameters are tuned via `RandomizedSearchCV` with `GroupKFold` (5 folds, 20 candidates). The target is log-transformed via `TransformedTargetRegressor` (the inner model fits `log(rent + 1)` but `.predict` returns dollars).
+
+Two estimators are available:
+- `rf` (default) — RandomForestRegressor
+- `lgbm` — LightGBM with gradient-boosted trees
+
+Writes:
+- `outputs/<slug>/rent_model.joblib` — fitted estimator
+- `outputs/<slug>/rent_model_metrics.json` — best hyperparams, val metrics, residual quantiles, **SHAP-based feature importance** (in log-rent space, normalized to sum to 1), training metadata
 
 ### 3. Process sale listings
 
@@ -91,12 +97,12 @@ uv run python process_listings.py [--poi <slug>]
 
 Enriches each listing with:
 - `monthlyMortgage` — 30-year fixed payment at the configured `INTEREST_RATE`
-- `predictedRent` — RF prediction
+- `predictedRent` — model prediction in dollars
 - `predictedRentMin / Max` — bounds derived from the val-set residual quantiles (q10 / q90); falls back to ±MAPE for legacy metrics files
-- `distanceToPoi` — haversine miles to the POI center
+- `distanceToPoi` — haversine miles to the POI center (also a model feature)
 - `mortgageCoverageRatio` — `predictedRentMin / monthlyMortgage` (higher = better cash flow)
 
-Exports `outputs/<slug>/selected_properties.csv` with listings passing all filters in `constants.py`, sorted by `mortgageCoverageRatio` descending.
+Exports `outputs/<slug>/selected_properties.csv` with listings passing all filters in `constants.py`, sorted by `mortgageCoverageRatio` descending. Each selected row has a `topFeatures` column — a JSON list of the 3 features with the largest SHAP contribution to that listing's predicted rent (in log-rent space; ranking is meaningful, raw magnitudes are not direct dollar contributions).
 
 ### 4. Validate against RentCast's AVM (optional)
 
