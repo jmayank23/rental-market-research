@@ -4,10 +4,18 @@ import math
 import joblib
 import pandas as pd
 
-from constants import BUDGET, BEDROOMS, INTEREST_RATE, LATITUDE, LONGITUDE, MORTGAGE_COVERAGE_RANGE, PROPERTY_TYPES, YEAR_MIN
+from constants import (
+    BEDROOMS,
+    BUDGET,
+    INTEREST_RATE,
+    LATITUDE,
+    LOAN_TERM_MONTHS,
+    LONGITUDE,
+    MORTGAGE_COVERAGE_RANGE,
+    PROPERTY_TYPES,
+    YEAR_MIN,
+)
 from rent_estimation_utils import FEATURES
-
-LOAN_TERM_MONTHS = 360  # 30-year fixed
 
 
 def haversine_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -93,7 +101,10 @@ def add_predicted_rent(
 def add_distance_to_poi(listings: list[dict]) -> list[dict]:
     for listing in listings:
         lat, lon = listing.get("latitude"), listing.get("longitude")
-        listing["distanceToPoi"] = haversine_miles(lat, lon, LATITUDE, LONGITUDE) if lat and lon else None
+        if lat is not None and lon is not None:
+            listing["distanceToPoi"] = haversine_miles(lat, lon, LATITUDE, LONGITUDE)
+        else:
+            listing["distanceToPoi"] = None
     return listings
 
 
@@ -110,6 +121,18 @@ def add_mortgage_coverage_ratio(listings: list[dict]) -> list[dict]:
 
 def export_selected_csv(listings: list[dict], output_path: str = "selected_properties.csv") -> None:
     selected = [l for l in listings if is_selected(l)]
+
+    high, low = MORTGAGE_COVERAGE_RANGE[1], MORTGAGE_COVERAGE_RANGE[0]
+    excluded_above = sum(1 for l in listings if (l.get("mortgageCoverageRatio") or 0) > high)
+    excluded_below = sum(
+        1 for l in listings
+        if l.get("mortgageCoverageRatio") is not None and l["mortgageCoverageRatio"] < low
+    )
+    print(
+        f"  MORTGAGE_COVERAGE_RANGE filter: "
+        f"{excluded_below:,} below {low}, {excluded_above:,} above {high}"
+    )
+
     df = pd.DataFrame(selected)
     df = df.sort_values("mortgageCoverageRatio", ascending=False)
     df.to_csv(output_path, index=False)

@@ -20,6 +20,9 @@ from pathlib import Path
 import requests
 from dotenv import load_dotenv
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from constants import BUDGET  # noqa: E402
+
 load_dotenv()
 API_KEY = os.getenv("RENTCAST_API_KEY")
 BASE_URL = "https://api.rentcast.io/v1"
@@ -29,6 +32,17 @@ RANDOM_SEED = 42
 PROCESSED_PATH = "sale_listings_processed.json"
 SAMPLE_PATH = Path(__file__).parent / "sample_properties.json"
 COMPARISON_PATH = Path(__file__).parent / "rent_estimate_comparison.json"
+
+
+def is_validation_candidate(listing: dict, budget: float = BUDGET) -> bool:
+    price = listing.get("price")
+    if price is None or price > budget:
+        return False
+    if listing.get("propertyType") != "Single Family":
+        return False
+    if listing.get("predictedRent") is None:
+        return False
+    return True
 
 
 def fetch_rentcast_estimate(listing: dict) -> dict:
@@ -58,12 +72,10 @@ def main() -> None:
     with open(PROCESSED_PATH) as f:
         listings = json.load(f)
 
-    candidates = [
-        l for l in listings
-        if l.get("withinBudget") and l.get("propertyType") == "Single Family"
-        and l.get("predictedRent") is not None
-    ]
+    candidates = [l for l in listings if is_validation_candidate(l)]
     print(f"Eligible listings: {len(candidates):,}")
+    if len(candidates) < SAMPLE_SIZE:
+        sys.exit(f"Only {len(candidates)} candidates available; need {SAMPLE_SIZE}")
 
     rng = random.Random(RANDOM_SEED)
     sample = rng.sample(candidates, SAMPLE_SIZE)

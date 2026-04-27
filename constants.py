@@ -3,6 +3,7 @@ LONGITUDE = -112.160449
 RADIUS = 15
 
 INTEREST_RATE = 0.07  # annual, 30-year fixed
+LOAN_TERM_MONTHS = 360
 
 # Output Filters
 BUDGET = 500_000

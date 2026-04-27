@@ -18,7 +18,6 @@ rental_finder/
 ├── selected_properties.csv        # Output: filtered listings meeting all criteria (generated)
 ├── rental_listings.json           # Output: active rental listings (generated)
 ├── .env                           # API key (not committed)
-├── experiments/                   # Exploratory rent estimation approaches (archived)
 ├── validation/                    # RentCast API vs model comparison
 │   ├── validate_rent_estimates.py # Samples 5 properties and compares estimates
 │   ├── sample_properties.json     # The 5 sampled sale listings (generated)

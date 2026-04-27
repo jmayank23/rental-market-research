@@ -7,9 +7,6 @@
 *.csv
 !tests/fixtures/*.json
 
-# Experiments
-experiments/
-
 # Python
 __pycache__/
 *.py[cod]
