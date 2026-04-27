@@ -50,7 +50,7 @@ Get an API key from the [RentCast API Dashboard](https://app.rentcast.io/app/api
 uv run pytest
 ```
 
-Tests run against committed fixtures in `tests/fixtures/` — no API key required for CI. The fixtures are real RentCast listings with all PII (addresses, agent contacts, MLS numbers) stripped and lat/lon jittered. Re-run `uv run python scripts/build_test_fixtures.py` only if the source schema changes (consumes a small number of API credits).
+Tests run against committed fixtures in `tests/fixtures/` — no API key required for CI. The fixtures are real RentCast listings, refreshed by running `uv run python scripts/build_test_fixtures.py` (consumes a small number of API credits).
 
 ## Usage
 
