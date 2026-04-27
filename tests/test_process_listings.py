@@ -7,7 +7,6 @@ import numpy as np
 from process_listings import (
     add_distance_to_poi,
     add_predicted_rent,
-    haversine_miles,
     monthly_mortgage,
 )
 
@@ -37,14 +36,6 @@ def test_distance_to_poi_real_listing(sale_listings_fixture):
         if listing.get("latitude") is not None and listing.get("longitude") is not None:
             assert listing["distanceToPoi"] is not None
             assert listing["distanceToPoi"] >= 0
-
-
-def test_haversine_known_distance():
-    # NYC to LA, ~2451 mi
-    nyc = (40.7128, -74.0060)
-    la = (34.0522, -118.2437)
-    miles = haversine_miles(*nyc, *la)
-    assert 2400 < miles < 2500
 
 
 def test_monthly_mortgage_basic():

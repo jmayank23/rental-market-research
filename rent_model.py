@@ -2,11 +2,14 @@
 Trains a Random Forest rent estimator on rental listings, evaluates it on a
 held-out 20% validation split, and persists the fitted model and metrics.
 
-Hyperparameters are selected via RandomizedSearchCV (5-fold CV on train split)
-before the final model is fit. Best params are recorded in the metrics file.
+Hyperparameters are selected via RandomizedSearchCV (5-fold GroupKFold on the
+training split) before the final model is fit. The target is log-transformed
+via TransformedTargetRegressor so the inner model fits log(price + 1) but
+.predict still returns dollars. The split is grouped on formattedAddress so
+re-listed properties cannot leak across train/val.
 
 Outputs (per-POI):
-    outputs/<slug>/rent_model.joblib        — fitted sklearn Pipeline
+    outputs/<slug>/rent_model.joblib        — fitted estimator
     outputs/<slug>/rent_model_metrics.json  — metrics + best hyperparams + config
 
 Usage:
@@ -21,8 +24,9 @@ from pathlib import Path
 
 import joblib
 import numpy as np
+from sklearn.compose import TransformedTargetRegressor
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.model_selection import RandomizedSearchCV, train_test_split
+from sklearn.model_selection import GroupKFold, GroupShuffleSplit, RandomizedSearchCV
 from sklearn.pipeline import Pipeline
 
 from cli import add_poi_args, resolve_poi
@@ -39,65 +43,91 @@ from rent_estimation_utils import (
 RANDOM_STATE = 42
 CV_FOLDS = 5
 N_ITER = 20
+GROUP_KEY = "formattedAddress"
 
 PARAM_DISTRIBUTIONS = {
-    "model__n_estimators": [50, 75, 100, 150],
-    "model__max_depth": [None, 10, 20, 30],
-    "model__min_samples_leaf": [1, 2, 3, 5],
-    "model__max_features": [0.6, 0.8, 1.0],
+    "regressor__model__n_estimators": [50, 75, 100, 150],
+    "regressor__model__max_depth": [None, 10, 20, 30],
+    "regressor__model__min_samples_leaf": [1, 2, 3, 5],
+    "regressor__model__max_features": [0.6, 0.8, 1.0],
 }
 
 
-def _build_pipeline(params: dict) -> Pipeline:
-    return Pipeline([
+def _build_estimator(params: dict) -> TransformedTargetRegressor:
+    inner = Pipeline([
         ("preprocessor", build_transformer()),
         ("model", RandomForestRegressor(**params, random_state=RANDOM_STATE, n_jobs=-1)),
     ])
+    return TransformedTargetRegressor(
+        regressor=inner,
+        func=np.log1p,
+        inverse_func=np.expm1,
+    )
 
 
-def tune_hyperparams(X_train, y_train) -> dict:
-    base_pipeline = _build_pipeline({})
+def tune_hyperparams(X_train, y_train, groups_train) -> dict:
+    base_estimator = _build_estimator({})
     search = RandomizedSearchCV(
-        estimator=base_pipeline,
+        estimator=base_estimator,
         param_distributions=PARAM_DISTRIBUTIONS,
         n_iter=N_ITER,
-        cv=CV_FOLDS,
+        cv=GroupKFold(n_splits=CV_FOLDS),
         scoring="neg_mean_absolute_percentage_error",
         n_jobs=-1,
         random_state=RANDOM_STATE,
     )
-    search.fit(X_train, y_train)
+    search.fit(X_train, y_train, groups=groups_train)
 
-    best_params = {k.replace("model__", ""): v for k, v in search.best_params_.items()}
+    best_params = {
+        k.replace("regressor__model__", ""): v for k, v in search.best_params_.items()
+    }
     best_cv_mape = -search.best_score_ * 100
     print(f"  Best CV MAPE : {best_cv_mape:.1f}%")
     print(f"  Best params  : {best_params}")
     return best_params
 
 
-def train(rental_path: str | Path, model_path: str | Path, metrics_path: str | Path) -> None:
-    df = preprocess(load_listings(rental_path))
+def _group_train_val_split(df, groups, test_size=0.2):
+    splitter = GroupShuffleSplit(n_splits=1, test_size=test_size, random_state=RANDOM_STATE)
+    train_idx, val_idx = next(splitter.split(df, groups=groups))
+    return train_idx, val_idx
+
+
+def train(
+    rental_path: str | Path,
+    model_path: str | Path,
+    metrics_path: str | Path,
+    poi: POI,
+) -> None:
+    df = preprocess(load_listings(rental_path), poi)
+    if GROUP_KEY not in df.columns:
+        raise ValueError(f"Rental listings must include {GROUP_KEY!r} for group-aware splitting")
+
     X, y = df[FEATURES], df[TARGET]
+    groups = df[GROUP_KEY].fillna("__unknown__").to_numpy()
 
-    X_train, X_val, y_train, y_val = train_test_split(
-        X, y, test_size=0.2, random_state=RANDOM_STATE
-    )
-    print(f"Train: {len(X_train):,}  |  Val: {len(X_val):,}")
+    train_idx, val_idx = _group_train_val_split(df, groups)
+    X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
+    y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
+    groups_train = groups[train_idx]
 
-    print(f"\nTuning hyperparameters ({CV_FOLDS}-fold CV, {N_ITER} candidates)...")
-    best_params = tune_hyperparams(X_train, y_train)
+    overlap = set(groups_train.tolist()) & set(groups[val_idx].tolist())
+    print(f"Train: {len(X_train):,}  |  Val: {len(X_val):,}  |  group overlap: {len(overlap)}")
 
-    pipeline = _build_pipeline(best_params)
-    pipeline.fit(X_train, y_train)
+    print(f"\nTuning hyperparameters ({CV_FOLDS}-fold GroupKFold, {N_ITER} candidates)...")
+    best_params = tune_hyperparams(X_train, y_train, groups_train)
 
-    preds = pipeline.predict(X_val)
+    estimator = _build_estimator(best_params)
+    estimator.fit(X_train, y_train)
+
+    preds = estimator.predict(X_val)
     print()
-    raw = print_metrics("Validation", y_val, preds)
+    raw_metrics = print_metrics("Validation", y_val, preds)
     metrics = {
-        "mae": round(raw["mae"], 2),
-        "rmse": round(raw["rmse"], 2),
-        "mape": round(raw["mape"], 3),
-        "r2": round(raw["r2"], 4),
+        "mae": round(raw_metrics["mae"], 2),
+        "rmse": round(raw_metrics["rmse"], 2),
+        "mape": round(raw_metrics["mape"], 3),
+        "r2": round(raw_metrics["r2"], 4),
     }
 
     rel_residuals = (y_val.to_numpy() - preds) / preds
@@ -111,19 +141,28 @@ def train(rental_path: str | Path, model_path: str | Path, metrics_path: str | P
         f"q10={residuals['q10']:+.3f}, q50={residuals['q50']:+.3f}, q90={residuals['q90']:+.3f}"
     )
 
-    joblib.dump(pipeline, model_path)
+    joblib.dump(estimator, model_path)
     print(f"\nModel saved → {model_path}")
 
     record = {
         "trained_at": datetime.now(timezone.utc).isoformat(),
         "training_data": str(rental_path),
+        "poi": {
+            "slug": poi.slug,
+            "name": poi.name,
+            "latitude": poi.latitude,
+            "longitude": poi.longitude,
+            "radius_miles": poi.radius_miles,
+        },
         "train_size": len(X_train),
         "val_size": len(X_val),
+        "group_overlap": len(overlap),
         "random_state": RANDOM_STATE,
         "cv_folds": CV_FOLDS,
         "n_iter": N_ITER,
         "features": FEATURES,
         "target": TARGET,
+        "target_transform": "log1p",
         "best_params": best_params,
         "val_metrics": metrics,
         "residual_quantiles": residuals,
@@ -139,6 +178,7 @@ def train_for_poi(poi: POI) -> None:
         rental_path=out_dir / "rental_listings.json",
         model_path=out_dir / "rent_model.joblib",
         metrics_path=out_dir / "rent_model_metrics.json",
+        poi=poi,
     )
 
 

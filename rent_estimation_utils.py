@@ -8,6 +8,10 @@ from sklearn.metrics import mean_absolute_error, mean_absolute_percentage_error,
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
+from constants import PRICE_RANGE, SQUAREFOOTAGE_RANGE
+from geo import haversine_miles
+from poi import POI
+
 FEATURES = [
     "bedrooms",
     "bathrooms",
@@ -16,11 +20,21 @@ FEATURES = [
     "yearBuilt",
     "latitude",
     "longitude",
+    "distanceToPoi",
     "propertyType",
 ]
 TARGET = "price"
 
-NUM_FEATURES = ["bedrooms", "bathrooms", "squareFootage", "lotSize", "yearBuilt", "latitude", "longitude"]
+NUM_FEATURES = [
+    "bedrooms",
+    "bathrooms",
+    "squareFootage",
+    "lotSize",
+    "yearBuilt",
+    "latitude",
+    "longitude",
+    "distanceToPoi",
+]
 CAT_FEATURES = ["propertyType"]
 REQUIRED_FEATURES = ["bedrooms", "bathrooms", "squareFootage", "latitude", "longitude"]
 
@@ -30,15 +44,46 @@ def load_listings(path: str) -> pd.DataFrame:
         return pd.DataFrame(json.load(f))
 
 
-def preprocess(df: pd.DataFrame) -> pd.DataFrame:
-    """Row-filter only: drop rows missing the target or required features.
+def add_distance_to_poi(df: pd.DataFrame, poi: POI) -> pd.DataFrame:
+    """Append a distanceToPoi column (miles) to the DataFrame in place-safe fashion."""
+    df = df.copy()
+    df["distanceToPoi"] = [
+        haversine_miles(lat, lon, poi.latitude, poi.longitude)
+        if pd.notna(lat) and pd.notna(lon)
+        else np.nan
+        for lat, lon in zip(df.get("latitude"), df.get("longitude"))
+    ]
+    return df
 
-    Imputation of optional features (`lotSize`, `yearBuilt`, `propertyType`)
-    happens inside the sklearn Pipeline so train and inference share the
-    same fitted statistics.
+
+def _filter_outliers(df: pd.DataFrame) -> pd.DataFrame:
+    price_lo, price_hi = PRICE_RANGE
+    sqft_lo, sqft_hi = SQUAREFOOTAGE_RANGE
+    before = len(df)
+    df = df[df[TARGET].between(price_lo, price_hi)]
+    df = df[df["squareFootage"].between(sqft_lo, sqft_hi)]
+    dropped = before - len(df)
+    if dropped:
+        print(f"  Outlier filter dropped {dropped:,} rows (price∉[{price_lo},{price_hi}] or sqft∉[{sqft_lo},{sqft_hi}])")
+    return df
+
+
+def preprocess(df: pd.DataFrame, poi: POI) -> pd.DataFrame:
+    """Row-filter + distance feature + outlier clip.
+
+    Returns the full DataFrame (all original columns preserved) with:
+    - rows missing target / required features dropped,
+    - rows outside the rental price / squareFootage outlier clip dropped,
+    - a `distanceToPoi` column appended.
+
+    Imputation of optional features (lotSize, yearBuilt, propertyType,
+    distanceToPoi for rows with missing coords) happens inside the sklearn
+    Pipeline so train and inference share the same fitted statistics.
     """
-    df = df[FEATURES + [TARGET]].copy()
+    df = df.copy()
+    df = add_distance_to_poi(df, poi)
     df = df.dropna(subset=[TARGET] + REQUIRED_FEATURES)
+    df = _filter_outliers(df)
     return df.reset_index(drop=True)
 
 
