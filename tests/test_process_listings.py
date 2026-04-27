@@ -8,10 +8,10 @@ from unittest.mock import patch
 import numpy as np
 
 import process_listings
+from finance import monthly_mortgage
 from process_listings import (
     add_distance_to_poi,
     add_predicted_rent,
-    monthly_mortgage,
 )
 
 
@@ -185,7 +185,7 @@ def test_csv_includes_top_features_when_model_provided(tmp_path, monkeypatch, re
             "latitude": 33.7, "longitude": -112.1, "distanceToPoi": 5.0,
         }
     ]
-    process_listings.add_monthly_mortgage(listings)
+    process_listings.add_carrying_cost(listings, poi)
     process_listings.add_predicted_rent(listings, model_path=model_path, metrics_path=metrics_path)
     process_listings.add_mortgage_coverage_ratio(listings)
 
@@ -202,6 +202,37 @@ def test_csv_includes_top_features_when_model_provided(tmp_path, monkeypatch, re
     assert len(parsed) == process_listings.TOP_FEATURES_K
     for entry in parsed:
         assert {"feature", "shap", "value"} <= entry.keys()
+
+
+def test_csv_includes_cost_estimate_flags(tmp_path):
+    """Listings carry costEstimateFlags surfacing missing cost components."""
+    from poi import POI, CostAssumptions
+
+    poi = POI(
+        slug="t",
+        name="T",
+        latitude=33.0,
+        longitude=-112.0,
+        radius_miles=10,
+        cost_assumptions=CostAssumptions(property_tax_rate=0.01),  # only tax provided
+    )
+
+    listings = [{
+        "id": "x", "formattedAddress": "1 Test St", "price": 250_000,
+        "propertyType": "Single Family", "bedrooms": 3, "bathrooms": 2,
+        "squareFootage": 1500, "lotSize": 5000, "yearBuilt": 2000,
+        "latitude": 33.7, "longitude": -112.1, "distanceToPoi": 5.0,
+        "predictedRent": 2000, "predictedRentMin": 1700, "predictedRentMax": 2400,
+    }]
+    process_listings.add_carrying_cost(listings, poi)
+    process_listings.add_mortgage_coverage_ratio(listings)
+
+    flags = listings[0]["costEstimateFlags"].split(",")
+    assert "insurance" in flags
+    assert "hoa" in flags
+    assert "maintenance" in flags
+    assert "vacancy_rate" in flags
+    assert "property_tax" not in flags  # provided via POI rate
 
 
 def test_csv_omits_top_features_when_model_path_is_none(tmp_path):

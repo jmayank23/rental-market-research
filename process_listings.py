@@ -22,12 +22,11 @@ from cli import add_poi_args, resolve_poi
 from constants import (
     BEDROOMS,
     BUDGET,
-    INTEREST_RATE,
-    LOAN_TERM_MONTHS,
     MORTGAGE_COVERAGE_RANGE,
     PROPERTY_TYPES,
     YEAR_MIN,
 )
+from finance import coverage_ratio, monthly_carrying_cost, monthly_mortgage
 from geo import haversine_miles
 from poi import POI
 from rent_estimation_utils import CAT_FEATURES, FEATURES, REQUIRED_FEATURES
@@ -35,16 +34,18 @@ from rent_estimation_utils import CAT_FEATURES, FEATURES, REQUIRED_FEATURES
 TOP_FEATURES_K = 3
 
 
-def monthly_mortgage(price: float, annual_rate: float = INTEREST_RATE) -> float:
-    """Return the monthly payment on a 30-year fixed mortgage for the given price."""
-    r = annual_rate / 12
-    return round(price * (r * (1 + r) ** LOAN_TERM_MONTHS) / ((1 + r) ** LOAN_TERM_MONTHS - 1), 2)
+def add_carrying_cost(listings: list[dict], poi: POI) -> list[dict]:
+    """Attach a structured carrying-cost breakdown + flat helpers to each listing.
 
-
-def add_monthly_mortgage(listings: list[dict]) -> list[dict]:
+    Components missing from both the listing payload and the POI's
+    cost_assumptions are recorded as null and surfaced via costEstimateFlags.
+    """
     for listing in listings:
-        price = listing.get("price")
-        listing["monthlyMortgage"] = monthly_mortgage(price) if price else None
+        breakdown = monthly_carrying_cost(listing, poi)
+        listing["carryingCost"] = breakdown
+        listing["monthlyMortgage"] = breakdown.get("principal_interest")
+        listing["carryingCostTotal"] = breakdown.get("total")
+        listing["costEstimateFlags"] = ",".join(breakdown.get("missing", []))
     return listings
 
 
@@ -126,11 +127,15 @@ def add_distance_to_poi(listings: list[dict], poi_lat: float, poi_lon: float) ->
 def add_mortgage_coverage_ratio(listings: list[dict]) -> list[dict]:
     for listing in listings:
         rent_min = listing.get("predictedRentMin")
-        mortgage = listing.get("monthlyMortgage")
-        if rent_min is not None and mortgage:
-            listing["mortgageCoverageRatio"] = round(rent_min / mortgage, 3)
-        else:
-            listing["mortgageCoverageRatio"] = None
+        carrying = listing.get("carryingCost")
+        if carrying is None:
+            mortgage = listing.get("monthlyMortgage")
+            if rent_min is not None and mortgage:
+                listing["mortgageCoverageRatio"] = round(rent_min / mortgage, 3)
+            else:
+                listing["mortgageCoverageRatio"] = None
+            continue
+        listing["mortgageCoverageRatio"] = coverage_ratio(rent_min, carrying)
     return listings
 
 
@@ -216,14 +221,13 @@ def process_sale_listings(
     model_path: str | Path,
     metrics_path: str | Path,
     csv_path: str | Path,
-    poi_lat: float,
-    poi_lon: float,
+    poi: POI,
 ) -> None:
     with open(input_path) as f:
         listings = json.load(f)
 
-    listings = add_monthly_mortgage(listings)
-    listings = add_distance_to_poi(listings, poi_lat=poi_lat, poi_lon=poi_lon)
+    listings = add_carrying_cost(listings, poi)
+    listings = add_distance_to_poi(listings, poi_lat=poi.latitude, poi_lon=poi.longitude)
     listings = add_predicted_rent(listings, model_path=model_path, metrics_path=metrics_path)
     listings = add_mortgage_coverage_ratio(listings)
 
@@ -234,8 +238,20 @@ def process_sale_listings(
     selected = sum(1 for l in listings if is_selected(l))
     with_rent = sum(1 for l in listings if l.get("predictedRent") is not None)
     print(f"Processed {total:,} listings — {selected:,} selected — {with_rent:,} with rent estimate")
+    _summarize_cost_flags(listings)
 
     export_selected_csv(listings, csv_path, model_path=model_path)
+
+
+def _summarize_cost_flags(listings: list[dict]) -> None:
+    """Tell the user which carrying-cost components were never available."""
+    counts: dict[str, int] = {}
+    for l in listings:
+        for flag in (l.get("carryingCost") or {}).get("missing") or []:
+            counts[flag] = counts.get(flag, 0) + 1
+    if counts:
+        summary = ", ".join(f"{k}={v:,}" for k, v in sorted(counts.items()))
+        print(f"  costEstimateFlags (count of listings missing each): {summary}")
 
 
 def process_for_poi(poi: POI) -> None:
@@ -246,8 +262,7 @@ def process_for_poi(poi: POI) -> None:
         model_path=out_dir / "rent_model.joblib",
         metrics_path=out_dir / "rent_model_metrics.json",
         csv_path=out_dir / "selected_properties.csv",
-        poi_lat=poi.latitude,
-        poi_lon=poi.longitude,
+        poi=poi,
     )
 
 

@@ -96,11 +96,14 @@ uv run python process_listings.py [--poi <slug>]
 ```
 
 Enriches each listing with:
-- `monthlyMortgage` — 30-year fixed payment at the configured `INTEREST_RATE`
+- `monthlyMortgage` — 30-year fixed payment at the configured `INTEREST_RATE` (alias for `carryingCost.principal_interest`)
+- `carryingCost` — structured monthly breakdown: `principal_interest`, `property_tax`, `insurance`, `hoa`, `maintenance`, `vacancy_rate`, `total`, `missing`. Cost components are sourced listing-first (only `hoa.fee` is on RentCast listings today), then the POI's `cost_assumptions` block, then `null` (added to `missing`). **No defaults are invented.**
+- `carryingCostTotal` — sum of non-null cost components
+- `costEstimateFlags` — comma-separated list of components that fell through to null
 - `predictedRent` — model prediction in dollars
 - `predictedRentMin / Max` — bounds derived from the val-set residual quantiles (q10 / q90); falls back to ±MAPE for legacy metrics files
 - `distanceToPoi` — haversine miles to the POI center (also a model feature)
-- `mortgageCoverageRatio` — `predictedRentMin / monthlyMortgage` (higher = better cash flow)
+- `mortgageCoverageRatio` — `predictedRentMin × (1 − vacancy_rate) / carryingCostTotal` (higher = better cash flow). Vacancy is applied to the rent side; if `vacancy_rate` is missing, no haircut is applied and `vacancy_rate` shows up in `costEstimateFlags`.
 
 Exports `outputs/<slug>/selected_properties.csv` with listings passing all filters in `constants.py`, sorted by `mortgageCoverageRatio` descending. Each selected row has a `topFeatures` column — a JSON list of the 3 features with the largest SHAP contribution to that listing's predicted rent (in log-rent space; ranking is meaningful, raw magnitudes are not direct dollar contributions).
 
@@ -122,11 +125,22 @@ A POI is just JSON in `pois/<slug>.json`:
   "name": "TSMC Arizona Plant",
   "latitude": 33.775196,
   "longitude": -112.160449,
-  "radius_miles": 15
+  "radius_miles": 15,
+  "cost_assumptions": {
+    "property_tax_rate": 0.006,
+    "insurance_annual": 1500,
+    "hoa_monthly": null,
+    "vacancy_rate": 0.06,
+    "maintenance_rate_of_price": 0.01
+  }
 }
 ```
 
 Slugs must be lowercase alphanumeric / dashes / underscores. Latitude in [-90, 90], longitude in [-180, 180], radius in (0, 100].
+
+The `cost_assumptions` block is optional and every field inside it is optional too. Missing fields are **never silently defaulted** — they show up per-listing in `costEstimateFlags` so you know what's not factored into the coverage ratio. Today the only listing-side cost RentCast carries is HOA (`hoa.fee`), which always wins over the POI's `hoa_monthly` fallback. Property tax / insurance / vacancy / maintenance are POI-only.
+
+See `pois/tsmc-az-with-costs.json` for a worked example. Real-data effect of adding cost assumptions to a TSMC run: selected listings drop from 96 → 8, because principal+interest alone overstates cash flow.
 
 ## Configuration
 

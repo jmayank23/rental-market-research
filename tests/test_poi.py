@@ -93,3 +93,30 @@ def test_output_dir_creates_directory(tmp_path, monkeypatch):
     out = poi.output_dir()
     assert out.exists()
     assert out.name == "my-place"
+
+
+def test_poi_loads_with_no_cost_assumptions():
+    """No cost_assumptions block → all components default to None (will be flagged)."""
+    poi = POI(**_valid_kwargs())
+    assert poi.cost_assumptions.property_tax_rate is None
+    assert poi.cost_assumptions.hoa_monthly is None
+
+
+def test_poi_loads_cost_assumptions_from_json(tmp_path):
+    path = tmp_path / "place.json"
+    path.write_text(json.dumps({
+        "slug": "place-x",
+        "name": "Test Place",
+        "latitude": 40.0,
+        "longitude": -75.0,
+        "radius_miles": 10,
+        "cost_assumptions": {
+            "property_tax_rate": 0.0072,
+            "insurance_annual": 1200,
+            "vacancy_rate": 0.06,
+        },
+    }))
+    poi = POI.from_json_file(path)
+    assert poi.cost_assumptions.property_tax_rate == 0.0072
+    assert poi.cost_assumptions.insurance_annual == 1200
+    assert poi.cost_assumptions.hoa_monthly is None  # not provided

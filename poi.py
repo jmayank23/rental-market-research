@@ -1,18 +1,15 @@
 """Point-of-interest dataclass + loaders.
 
 A POI is the geographic seam the whole pipeline rotates around: search
-center, search radius, slug for filesystem layout, display name. Built
-to be resolved once at CLI entry and passed down — no module-level
-globals, so swapping the POI swaps the whole run.
-
-Future: a `cost_assumptions` block on the POI is reserved for Stage 7.
+center, search radius, slug for filesystem layout, display name, and an
+optional `cost_assumptions` block used by Stage 7's carrying-cost helper.
 """
 
 from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent
@@ -23,12 +20,38 @@ _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 
 @dataclass(frozen=True)
+class CostAssumptions:
+    """User-supplied per-POI cost rates. All fields optional — missing values
+    surface in costEstimateFlags rather than being silently defaulted."""
+
+    property_tax_rate: float | None = None       # annual rate, fraction of price
+    insurance_annual: float | None = None        # annual dollars
+    hoa_monthly: float | None = None             # monthly dollars (listing.hoa.fee preferred)
+    vacancy_rate: float | None = None            # fraction of rent
+    maintenance_rate_of_price: float | None = None  # annual rate, fraction of price
+
+    @classmethod
+    def from_dict(cls, data: dict | None) -> "CostAssumptions":
+        if not data:
+            return cls()
+        allowed = {f for f in cls.__dataclass_fields__}
+        unknown = set(data) - allowed
+        if unknown:
+            raise ValueError(f"Unknown cost_assumptions keys: {sorted(unknown)}")
+        return cls(**{k: data[k] for k in data})
+
+    def to_dict(self) -> dict:
+        return {k: v for k, v in self.__dict__.items() if v is not None}
+
+
+@dataclass(frozen=True)
 class POI:
     slug: str
     name: str
     latitude: float
     longitude: float
     radius_miles: float
+    cost_assumptions: CostAssumptions = field(default_factory=CostAssumptions)
 
     def __post_init__(self) -> None:
         if not _SLUG_RE.fullmatch(self.slug):
@@ -50,6 +73,7 @@ class POI:
             latitude=float(data["latitude"]),
             longitude=float(data["longitude"]),
             radius_miles=float(data["radius_miles"]),
+            cost_assumptions=CostAssumptions.from_dict(data.get("cost_assumptions")),
         )
 
     @classmethod
