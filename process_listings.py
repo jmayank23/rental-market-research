@@ -14,7 +14,9 @@ import json
 from pathlib import Path
 
 import joblib
+import numpy as np
 import pandas as pd
+import shap
 
 from cli import add_poi_args, resolve_poi
 from constants import (
@@ -28,7 +30,9 @@ from constants import (
 )
 from geo import haversine_miles
 from poi import POI
-from rent_estimation_utils import FEATURES, REQUIRED_FEATURES
+from rent_estimation_utils import CAT_FEATURES, FEATURES, REQUIRED_FEATURES
+
+TOP_FEATURES_K = 3
 
 
 def monthly_mortgage(price: float, annual_rate: float = INTEREST_RATE) -> float:
@@ -130,7 +134,60 @@ def add_mortgage_coverage_ratio(listings: list[dict]) -> list[dict]:
     return listings
 
 
-def export_selected_csv(listings: list[dict], output_path: str | Path) -> None:
+def _attach_top_features(selected: list[dict], model_path: str | Path, k: int = TOP_FEATURES_K) -> None:
+    """Attach a `topFeatures` JSON blob to each selected listing via SHAP.
+
+    Each entry is the top-k transformed-feature contributions sorted by |SHAP|,
+    in log-rent space, with the originating raw value.
+    """
+    if not selected:
+        return
+    estimator = joblib.load(model_path)
+    inner = estimator.regressor_
+    preprocessor = inner.named_steps["preprocessor"]
+    model = inner.named_steps["model"]
+
+    df = pd.DataFrame(selected)
+    for col in FEATURES:
+        if col not in df.columns:
+            df[col] = None
+    feat_df = df[FEATURES]
+
+    transformed = preprocessor.transform(feat_df)
+    transformed_names = preprocessor.get_feature_names_out()
+
+    explainer = shap.TreeExplainer(model)
+    raw = explainer.shap_values(transformed)
+    if isinstance(raw, list):
+        raw = raw[0]
+    shap_values = np.asarray(raw)
+
+    def _orig_feature(transformed_name: str) -> str:
+        key = transformed_name.split("__", 1)[1] if "__" in transformed_name else transformed_name
+        for orig in CAT_FEATURES:
+            if key.startswith(f"{orig}_"):
+                return orig
+        return key
+
+    for i, listing in enumerate(selected):
+        order = np.argsort(-np.abs(shap_values[i]))[:k]
+        top: list[dict] = []
+        for j in order:
+            orig = _orig_feature(transformed_names[j])
+            value = listing.get(orig)
+            top.append({
+                "feature": orig,
+                "shap": round(float(shap_values[i, j]), 4),
+                "value": value,
+            })
+        listing["topFeatures"] = json.dumps(top)
+
+
+def export_selected_csv(
+    listings: list[dict],
+    output_path: str | Path,
+    model_path: str | Path | None = None,
+) -> None:
     selected = [l for l in listings if is_selected(l)]
 
     high, low = MORTGAGE_COVERAGE_RANGE[1], MORTGAGE_COVERAGE_RANGE[0]
@@ -143,6 +200,9 @@ def export_selected_csv(listings: list[dict], output_path: str | Path) -> None:
         f"  MORTGAGE_COVERAGE_RANGE filter: "
         f"{excluded_below:,} below {low}, {excluded_above:,} above {high}"
     )
+
+    if model_path is not None:
+        _attach_top_features(selected, model_path)
 
     df = pd.DataFrame(selected)
     df = df.sort_values("mortgageCoverageRatio", ascending=False)
@@ -175,7 +235,7 @@ def process_sale_listings(
     with_rent = sum(1 for l in listings if l.get("predictedRent") is not None)
     print(f"Processed {total:,} listings — {selected:,} selected — {with_rent:,} with rent estimate")
 
-    export_selected_csv(listings, csv_path)
+    export_selected_csv(listings, csv_path, model_path=model_path)
 
 
 def process_for_poi(poi: POI) -> None:

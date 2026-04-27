@@ -1,9 +1,13 @@
 """Tests for process_listings helpers."""
 
+import csv
+import json
+from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
 
+import process_listings
 from process_listings import (
     add_distance_to_poi,
     add_predicted_rent,
@@ -152,3 +156,66 @@ def test_bounds_bracket_prediction_in_normal_case():
                 add_predicted_rent(listings)
     pred = listings[0]["predictedRent"]
     assert listings[0]["predictedRentMin"] <= pred <= listings[0]["predictedRentMax"]
+
+
+def test_csv_includes_top_features_when_model_provided(tmp_path, monkeypatch, rental_listings_fixture):
+    """End-to-end: training a real model and exporting selected listings yields topFeatures column."""
+    import json as _json
+
+    import rent_model
+    from poi import POI
+
+    poi = POI(slug="tsmc-az", name="TSMC AZ", latitude=33.775196, longitude=-112.160449, radius_miles=15)
+    rental_path = tmp_path / "rental.json"
+    with open(rental_path, "w") as f:
+        _json.dump(rental_listings_fixture, f)
+    model_path = tmp_path / "model.joblib"
+    metrics_path = tmp_path / "metrics.json"
+
+    monkeypatch.setattr(rent_model, "N_ITER", 2)
+    monkeypatch.setattr(rent_model, "CV_FOLDS", 2)
+    rent_model.train(rental_path, model_path, metrics_path, poi, model_name="rf")
+
+    # Synthesize a single sale-like listing that passes the filters.
+    listings = [
+        {
+            "id": "x", "formattedAddress": "1 Test St", "price": 250_000,
+            "propertyType": "Single Family", "bedrooms": 3, "bathrooms": 2,
+            "squareFootage": 1500, "lotSize": 5000, "yearBuilt": 2000,
+            "latitude": 33.7, "longitude": -112.1, "distanceToPoi": 5.0,
+        }
+    ]
+    process_listings.add_monthly_mortgage(listings)
+    process_listings.add_predicted_rent(listings, model_path=model_path, metrics_path=metrics_path)
+    process_listings.add_mortgage_coverage_ratio(listings)
+
+    # Force selection by making the ratio fall in band, regardless of actual prediction.
+    listings[0]["mortgageCoverageRatio"] = 1.0
+
+    csv_path = tmp_path / "selected.csv"
+    process_listings.export_selected_csv(listings, csv_path, model_path=model_path)
+
+    rows = list(csv.DictReader(open(csv_path)))
+    assert len(rows) == 1
+    assert "topFeatures" in rows[0]
+    parsed = _json.loads(rows[0]["topFeatures"])
+    assert len(parsed) == process_listings.TOP_FEATURES_K
+    for entry in parsed:
+        assert {"feature", "shap", "value"} <= entry.keys()
+
+
+def test_csv_omits_top_features_when_model_path_is_none(tmp_path):
+    """Backwards compatibility: skip SHAP when no model is provided."""
+    listings = [{
+        "id": "x", "formattedAddress": "1 Test St", "price": 250_000,
+        "propertyType": "Single Family", "bedrooms": 3, "bathrooms": 2,
+        "squareFootage": 1500, "lotSize": 5000, "yearBuilt": 2000,
+        "latitude": 33.7, "longitude": -112.1, "distanceToPoi": 5.0,
+        "monthlyMortgage": 1500, "predictedRent": 2000, "predictedRentMin": 1700,
+        "predictedRentMax": 2400, "mortgageCoverageRatio": 1.13,
+    }]
+    csv_path = tmp_path / "selected.csv"
+    process_listings.export_selected_csv(listings, csv_path)
+    rows = list(csv.DictReader(open(csv_path)))
+    assert len(rows) == 1
+    assert "topFeatures" not in rows[0]
