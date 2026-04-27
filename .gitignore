@@ -5,6 +5,7 @@
 *.json
 *.joblib
 *.csv
+!tests/fixtures/*.json
 
 # Experiments
 experiments/
