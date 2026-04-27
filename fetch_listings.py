@@ -1,3 +1,4 @@
+import argparse
 import json
 import os
 import time
@@ -5,7 +6,8 @@ import time
 import requests
 from dotenv import load_dotenv
 
-from constants import LATITUDE, LONGITUDE, RADIUS
+from cli import add_poi_args, resolve_poi
+from poi import POI
 
 load_dotenv()
 
@@ -75,28 +77,41 @@ def fetch_all_listings(endpoint: str, params: dict) -> list:
     return all_results
 
 
-def main():
+def fetch_for_poi(poi: POI) -> None:
     if not API_KEY:
         raise ValueError("RENTCAST_API_KEY environment variable not set")
 
+    out_dir = poi.output_dir()
     location_params = {
-        "latitude": LATITUDE,
-        "longitude": LONGITUDE,
-        "radius": RADIUS,
+        "latitude": poi.latitude,
+        "longitude": poi.longitude,
+        "radius": poi.radius_miles,
         "status": "Active",
     }
 
+    print(f"POI: {poi.name} ({poi.slug}) — {poi.radius_miles} mi @ ({poi.latitude}, {poi.longitude})")
+
     print("Fetching sale listings...")
     sale_listings = fetch_all_listings("/listings/sale", location_params)
-    with open("sale_listings.json", "w") as f:
+    sale_path = out_dir / "sale_listings.json"
+    with open(sale_path, "w") as f:
         json.dump(sale_listings, f, indent=2)
-    print(f"Saved {len(sale_listings)} sale listings to sale_listings.json\n")
+    print(f"Saved {len(sale_listings)} sale listings → {sale_path}\n")
 
     print("Fetching rental listings...")
     rental_listings = fetch_all_listings("/listings/rental/long-term", location_params)
-    with open("rental_listings.json", "w") as f:
+    rental_path = out_dir / "rental_listings.json"
+    with open(rental_path, "w") as f:
         json.dump(rental_listings, f, indent=2)
-    print(f"Saved {len(rental_listings)} rental listings to rental_listings.json")
+    print(f"Saved {len(rental_listings)} rental listings → {rental_path}")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    add_poi_args(parser)
+    args = parser.parse_args()
+    poi = resolve_poi(args)
+    fetch_for_poi(poi)
 
 
 if __name__ == "__main__":

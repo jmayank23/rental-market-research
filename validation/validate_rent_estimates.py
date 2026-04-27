@@ -1,16 +1,18 @@
 """
 Samples 5 Single Family listings within budget from sale_listings_processed.json,
-queries the RentCast rent estimate API for each, and compares against our model's
-predicted rent.
+queries the RentCast rent estimate API for each, and compares against our
+model's predicted rent.
 
-Outputs:
-    validation/sample_properties.json     — the 5 sampled sale listings
-    validation/rent_estimate_comparison.json — side-by-side comparison
+Outputs (per-POI):
+    outputs/<slug>/validation/sample_properties.json
+    outputs/<slug>/validation/rent_estimate_comparison.json
 
 Usage:
     uv run python validation/validate_rent_estimates.py
+    uv run python validation/validate_rent_estimates.py --poi austin-tx
 """
 
+import argparse
 import json
 import os
 import random
@@ -21,7 +23,9 @@ import requests
 from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from cli import add_poi_args, resolve_poi  # noqa: E402
 from constants import BUDGET  # noqa: E402
+from poi import POI  # noqa: E402
 
 load_dotenv()
 API_KEY = os.getenv("RENTCAST_API_KEY")
@@ -29,9 +33,6 @@ BASE_URL = "https://api.rentcast.io/v1"
 
 SAMPLE_SIZE = 5
 RANDOM_SEED = 42
-PROCESSED_PATH = "sale_listings_processed.json"
-SAMPLE_PATH = Path(__file__).parent / "sample_properties.json"
-COMPARISON_PATH = Path(__file__).parent / "rent_estimate_comparison.json"
 
 
 def is_validation_candidate(listing: dict, budget: float = BUDGET) -> bool:
@@ -65,11 +66,21 @@ def fetch_rentcast_estimate(listing: dict) -> dict:
     return resp.json()
 
 
-def main() -> None:
+def validate_for_poi(poi: POI) -> None:
     if not API_KEY:
         sys.exit("RENTCAST_API_KEY not set in .env")
 
-    with open(PROCESSED_PATH) as f:
+    out_dir = poi.output_dir()
+    processed_path = out_dir / "sale_listings_processed.json"
+    if not processed_path.exists():
+        sys.exit(f"{processed_path} missing; run process_listings.py first")
+
+    validation_dir = out_dir / "validation"
+    validation_dir.mkdir(parents=True, exist_ok=True)
+    sample_path = validation_dir / "sample_properties.json"
+    comparison_path = validation_dir / "rent_estimate_comparison.json"
+
+    with open(processed_path) as f:
         listings = json.load(f)
 
     candidates = [l for l in listings if is_validation_candidate(l)]
@@ -80,9 +91,9 @@ def main() -> None:
     rng = random.Random(RANDOM_SEED)
     sample = rng.sample(candidates, SAMPLE_SIZE)
 
-    with open(SAMPLE_PATH, "w") as f:
+    with open(sample_path, "w") as f:
         json.dump(sample, f, indent=2)
-    print(f"Saved {SAMPLE_SIZE} sampled properties → {SAMPLE_PATH}\n")
+    print(f"Saved {SAMPLE_SIZE} sampled properties → {sample_path}\n")
 
     comparisons = []
     for listing in sample:
@@ -113,11 +124,10 @@ def main() -> None:
             },
         })
 
-    with open(COMPARISON_PATH, "w") as f:
+    with open(comparison_path, "w") as f:
         json.dump(comparisons, f, indent=2)
-    print(f"\nSaved comparison → {COMPARISON_PATH}\n")
+    print(f"\nSaved comparison → {comparison_path}\n")
 
-    # Print summary table
     print(f"  {'Address':45s} {'Beds':>4} {'SqFt':>6} │ {'Our Min':>8} {'Our':>8} {'Our Max':>8} │ {'RC Low':>8} {'RC':>8} {'RC High':>8}")
     print("  " + "─" * 45 + "─────┬──────────────────────────────┬──────────────────────────────")
     for c in comparisons:
@@ -131,6 +141,13 @@ def main() -> None:
             f" ${om['predictedRentMin'] or 0:>7,} ${om['predictedRent'] or 0:>7,} ${om['predictedRentMax'] or 0:>7,} │"
             f" ${rc['rentRangeLow'] or 0:>7,} ${rc['rent'] or 0:>7,} ${rc['rentRangeHigh'] or 0:>7,}"
         )
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    add_poi_args(parser)
+    args = parser.parse_args()
+    validate_for_poi(resolve_poi(args))
 
 
 if __name__ == "__main__":

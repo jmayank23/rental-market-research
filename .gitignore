@@ -6,6 +6,10 @@
 *.joblib
 *.csv
 !tests/fixtures/*.json
+!pois/*.json
+
+# Per-POI generated outputs
+outputs/
 
 # Python
 __pycache__/

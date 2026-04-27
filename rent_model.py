@@ -5,16 +5,19 @@ held-out 20% validation split, and persists the fitted model and metrics.
 Hyperparameters are selected via RandomizedSearchCV (5-fold CV on train split)
 before the final model is fit. Best params are recorded in the metrics file.
 
-Outputs:
-    rent_model.joblib        — fitted sklearn Pipeline (transformer + RF)
-    rent_model_metrics.json  — validation metrics + best hyperparams + model config
+Outputs (per-POI):
+    outputs/<slug>/rent_model.joblib        — fitted sklearn Pipeline
+    outputs/<slug>/rent_model_metrics.json  — metrics + best hyperparams + config
 
 Usage:
     uv run python rent_model.py
+    uv run python rent_model.py --poi austin-tx
 """
 
+import argparse
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 import joblib
 import numpy as np
@@ -22,6 +25,8 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import RandomizedSearchCV, train_test_split
 from sklearn.pipeline import Pipeline
 
+from cli import add_poi_args, resolve_poi
+from poi import POI
 from rent_estimation_utils import (
     FEATURES,
     TARGET,
@@ -35,16 +40,12 @@ RANDOM_STATE = 42
 CV_FOLDS = 5
 N_ITER = 20
 
-# Previous fixed params: n_estimators=75, min_samples_leaf=2, max_features=0.6, max_depth=None
 PARAM_DISTRIBUTIONS = {
     "model__n_estimators": [50, 75, 100, 150],
     "model__max_depth": [None, 10, 20, 30],
     "model__min_samples_leaf": [1, 2, 3, 5],
     "model__max_features": [0.6, 0.8, 1.0],
 }
-
-MODEL_PATH = "rent_model.joblib"
-METRICS_PATH = "rent_model_metrics.json"
 
 
 def _build_pipeline(params: dict) -> Pipeline:
@@ -74,7 +75,7 @@ def tune_hyperparams(X_train, y_train) -> dict:
     return best_params
 
 
-def train(rental_path: str = "rental_listings.json") -> None:
+def train(rental_path: str | Path, model_path: str | Path, metrics_path: str | Path) -> None:
     df = preprocess(load_listings(rental_path))
     X, y = df[FEATURES], df[TARGET]
 
@@ -99,9 +100,6 @@ def train(rental_path: str = "rental_listings.json") -> None:
         "r2": round(raw["r2"], 4),
     }
 
-    # Residual quantiles for honest prediction intervals.
-    # Defined as (actual - predicted) / predicted on the val split, so
-    # downstream code can build bounds via prediction * (1 + q).
     rel_residuals = (y_val.to_numpy() - preds) / preds
     residuals = {
         "q10": round(float(np.quantile(rel_residuals, 0.10)), 4),
@@ -113,12 +111,12 @@ def train(rental_path: str = "rental_listings.json") -> None:
         f"q10={residuals['q10']:+.3f}, q50={residuals['q50']:+.3f}, q90={residuals['q90']:+.3f}"
     )
 
-    joblib.dump(pipeline, MODEL_PATH)
-    print(f"\nModel saved → {MODEL_PATH}")
+    joblib.dump(pipeline, model_path)
+    print(f"\nModel saved → {model_path}")
 
     record = {
         "trained_at": datetime.now(timezone.utc).isoformat(),
-        "training_data": rental_path,
+        "training_data": str(rental_path),
         "train_size": len(X_train),
         "val_size": len(X_val),
         "random_state": RANDOM_STATE,
@@ -130,10 +128,26 @@ def train(rental_path: str = "rental_listings.json") -> None:
         "val_metrics": metrics,
         "residual_quantiles": residuals,
     }
-    with open(METRICS_PATH, "w") as f:
+    with open(metrics_path, "w") as f:
         json.dump(record, f, indent=2)
-    print(f"Metrics saved → {METRICS_PATH}")
+    print(f"Metrics saved → {metrics_path}")
+
+
+def train_for_poi(poi: POI) -> None:
+    out_dir = poi.output_dir()
+    train(
+        rental_path=out_dir / "rental_listings.json",
+        model_path=out_dir / "rent_model.joblib",
+        metrics_path=out_dir / "rent_model_metrics.json",
+    )
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    add_poi_args(parser)
+    args = parser.parse_args()
+    train_for_poi(resolve_poi(args))
 
 
 if __name__ == "__main__":
-    train()
+    main()

@@ -12,16 +12,19 @@ from process_listings import (
 )
 
 
+TSMC_LAT, TSMC_LON = 33.775196, -112.160449
+
+
 def test_distance_to_poi_handles_none_coords():
     listings = [{"latitude": None, "longitude": None}]
-    add_distance_to_poi(listings)
+    add_distance_to_poi(listings, TSMC_LAT, TSMC_LON)
     assert listings[0]["distanceToPoi"] is None
 
 
 def test_distance_to_poi_zero_coords_treated_as_valid():
     """Lat/lon of 0 are valid coordinates (equator/prime meridian) — must not be falsy-skipped."""
     listings = [{"latitude": 0.0, "longitude": 0.0}]
-    add_distance_to_poi(listings)
+    add_distance_to_poi(listings, TSMC_LAT, TSMC_LON)
     # TSMC AZ → (0,0) is a long way; just assert it computed something numeric.
     assert listings[0]["distanceToPoi"] is not None
     assert listings[0]["distanceToPoi"] > 0
@@ -29,7 +32,7 @@ def test_distance_to_poi_zero_coords_treated_as_valid():
 
 def test_distance_to_poi_real_listing(sale_listings_fixture):
     listings = [dict(l) for l in sale_listings_fixture[:5]]
-    add_distance_to_poi(listings)
+    add_distance_to_poi(listings, TSMC_LAT, TSMC_LON)
     for listing in listings:
         if listing.get("latitude") is not None and listing.get("longitude") is not None:
             assert listing["distanceToPoi"] is not None

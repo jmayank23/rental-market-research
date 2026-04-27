@@ -1,28 +1,34 @@
 # Rental Finder
 
-Downloads active property sale and rental listings within a configurable radius of the TSMC manufacturing plant in Arizona (lat: 33.775196, lon: -112.160449) using the [RentCast API](https://developers.rentcast.io).
+Downloads active property sale and rental listings within a configurable radius of any user-supplied point of interest (POI), trains a rent estimator on the local rental market, and shortlists for-sale properties whose predicted rent comfortably covers the mortgage. Defaults to the TSMC manufacturing plant in Arizona; switch POIs via a single CLI flag.
 
 ## Project Structure
 
 ```
 rental_finder/
-├── constants.py                   # Search coordinates, interest rate, budget
-├── fetch_listings.py              # Downloads sale + rental listings from RentCast API
-├── process_listings.py            # Transforms sale listings and filters to selected_properties.csv
-├── rent_estimation_utils.py       # Shared preprocessing for rent model
-├── rent_model.py                  # Tunes RF hyperparams via CV, trains estimator, saves model + metrics
-├── rent_model.joblib              # Fitted model pipeline (generated)
-├── rent_model_metrics.json        # Validation metrics, best hyperparams + model config (generated)
-├── sale_listings.json             # Output: active sale listings (generated)
-├── sale_listings_processed.json   # Output: sale listings enriched with mortgage + rent fields
-├── selected_properties.csv        # Output: filtered listings meeting all criteria (generated)
-├── rental_listings.json           # Output: active rental listings (generated)
-├── .env                           # API key (not committed)
-├── validation/                    # RentCast API vs model comparison
-│   ├── validate_rent_estimates.py # Samples 5 properties and compares estimates
-│   ├── sample_properties.json     # The 5 sampled sale listings (generated)
-│   └── rent_estimate_comparison.json # Side-by-side comparison (generated)
-└── rentcast_api_docs/             # Local copy of RentCast API documentation
+├── poi.py                         # POI dataclass + JSON loader
+├── cli.py                         # Shared --poi CLI surface
+├── pois/
+│   └── tsmc-az.json               # Default POI definition
+├── constants.py                   # Modeling + filter knobs (POI-agnostic)
+├── fetch_listings.py              # Downloads sale + rental listings
+├── rent_estimation_utils.py       # Pipeline + preprocessing
+├── rent_model.py                  # Trains rent estimator (RF + RandomizedSearchCV)
+├── process_listings.py            # Scores sale listings, exports selected_properties.csv
+├── validation/
+│   └── validate_rent_estimates.py # Compares our predictions vs RentCast AVM
+├── outputs/<slug>/                # Per-POI generated artifacts (gitignored)
+│   ├── sale_listings.json
+│   ├── rental_listings.json
+│   ├── rent_model.joblib
+│   ├── rent_model_metrics.json
+│   ├── sale_listings_processed.json
+│   ├── selected_properties.csv
+│   └── validation/
+├── tests/                         # pytest suite
+├── scripts/build_test_fixtures.py # One-shot real-data fixture builder
+├── rentcast_api_docs/             # Local copy of RentCast API docs
+└── .env                           # API key (not committed)
 ```
 
 ## Setup
@@ -53,60 +59,86 @@ Tests run against committed fixtures in `tests/fixtures/` — no API key require
 
 ## Usage
 
+The default POI is `tsmc-az`. Every script accepts the same `--poi` family of flags.
+
 ### 1. Fetch listings
 
 ```bash
-uv run python fetch_listings.py
+uv run python fetch_listings.py                    # default: tsmc-az
+uv run python fetch_listings.py --poi austin-tx    # named POI from pois/austin-tx.json
+uv run python fetch_listings.py \                  # ad-hoc POI
+    --poi-name "Austin TX" \
+    --poi-lat 30.27 --poi-lon -97.74 --poi-radius 20
 ```
 
-This will:
-- Fetch all **active sale listings** within 15 miles of the TSMC plant → saved to `sale_listings.json`
-- Fetch all **active rental listings** within 15 miles of the TSMC plant → saved to `rental_listings.json`
-
-Results are paginated automatically (up to 500 per request) until all listings are retrieved.
+Writes to `outputs/<slug>/sale_listings.json` and `outputs/<slug>/rental_listings.json`. Pagination is automatic (up to 500 per request); transient 5xx / 429 / connection errors are retried with exponential backoff.
 
 ### 2. Train the rent estimator
 
 ```bash
-uv run python rent_model.py
+uv run python rent_model.py [--poi <slug>]
 ```
 
-Uses `rental_listings.json` with an 80/20 train/val split. Tunes Random Forest hyperparameters via `RandomizedSearchCV` (5-fold CV, 20 candidates) on the training split, then trains the final model with the best params and prints validation metrics (MAE, RMSE, MAPE, R²). Writes:
-- `rent_model.joblib` — fitted sklearn Pipeline ready for inference
-- `rent_model_metrics.json` — best hyperparams, validation metrics, model config, and training metadata
+Uses the rentals fetched for the given POI with an 80/20 train/val split. Tunes Random Forest hyperparameters via `RandomizedSearchCV` (5-fold CV, 20 candidates), then prints validation metrics. Writes:
+- `outputs/<slug>/rent_model.joblib` — fitted sklearn Pipeline (imputers + scaler + OHE + RF)
+- `outputs/<slug>/rent_model_metrics.json` — best hyperparams, val metrics, residual quantiles, training metadata
 
 ### 3. Process sale listings
 
 ```bash
-uv run python process_listings.py
+uv run python process_listings.py [--poi <slug>]
 ```
 
-Enriches `sale_listings.json` with the following fields per listing (using the trained `rent_model.joblib`):
-- `monthlyMortgage` — estimated monthly payment on a 30-year fixed mortgage
-- `predictedRent` — Random Forest rent estimate
-- `predictedRentMin` — lower bound: `predictedRent × (1 − MAPE)`
-- `predictedRentMax` — upper bound: `predictedRent × (1 + MAPE)`
+Enriches each listing with:
+- `monthlyMortgage` — 30-year fixed payment at the configured `INTEREST_RATE`
+- `predictedRent` — RF prediction
+- `predictedRentMin / Max` — bounds derived from the val-set residual quantiles (q10 / q90); falls back to ±MAPE for legacy metrics files
+- `distanceToPoi` — haversine miles to the POI center
 - `mortgageCoverageRatio` — `predictedRentMin / monthlyMortgage` (higher = better cash flow)
 
-Also exports `selected_properties.csv` — listings passing all filters in `constants.py`, sorted by `mortgageCoverageRatio` descending.
+Exports `outputs/<slug>/selected_properties.csv` with listings passing all filters in `constants.py`, sorted by `mortgageCoverageRatio` descending.
+
+### 4. Validate against RentCast's AVM (optional)
+
+```bash
+uv run python validation/validate_rent_estimates.py [--poi <slug>]
+```
+
+Samples 5 Single Family listings under budget and compares our rent prediction against RentCast's `/avm/rent/long-term` estimate, side by side.
+
+## POI Configuration
+
+A POI is just JSON in `pois/<slug>.json`:
+
+```json
+{
+  "slug": "tsmc-az",
+  "name": "TSMC Arizona Plant",
+  "latitude": 33.775196,
+  "longitude": -112.160449,
+  "radius_miles": 15
+}
+```
+
+Slugs must be lowercase alphanumeric / dashes / underscores. Latitude in [-90, 90], longitude in [-180, 180], radius in (0, 100].
 
 ## Configuration
 
 | File | Variable | Description |
 |------|----------|-------------|
-| `constants.py` | `LATITUDE`, `LONGITUDE` | Center of the search area |
-| `constants.py` | `RADIUS` | Search radius in miles (default: 15, max: 100) |
+| `pois/<slug>.json` | `latitude`, `longitude`, `radius_miles` | Center + radius of the search area |
 | `constants.py` | `INTEREST_RATE` | Annual mortgage interest rate (default: 0.07) |
+| `constants.py` | `LOAN_TERM_MONTHS` | Mortgage term in months (default: 360) |
 | `constants.py` | `BUDGET` | Max purchase price (default: $500,000) |
 | `constants.py` | `PROPERTY_TYPES` | Allowed property types (default: Single Family, Townhouse) |
 | `constants.py` | `BEDROOMS` | Allowed bedroom counts (default: [3]) |
-| `constants.py` | `MORTGAGE_COVERAGE_RANGE` | Min/max mortgage coverage ratio (default: [0.7, 1.5]) |
+| `constants.py` | `MORTGAGE_COVERAGE_RANGE` | Min/max coverage ratio (default: [0.7, 1.5]) |
 | `constants.py` | `YEAR_MIN` | Minimum year built (default: 1980) |
 | `.env` | `RENTCAST_API_KEY` | Your RentCast API key |
 
 ## Output Format
 
-Both output files are JSON arrays. Each listing record includes:
+Both fetched files are JSON arrays. Each listing record includes:
 
 - **Location**: full address, city, state, zip, county, lat/lon
 - **Property attributes**: type, bedrooms, bathrooms, square footage, lot size, year built

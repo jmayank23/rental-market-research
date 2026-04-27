@@ -1,20 +1,33 @@
+"""Score sale listings against a trained rent model and export the shortlist.
+
+Outputs (per-POI):
+    outputs/<slug>/sale_listings_processed.json — every listing enriched
+    outputs/<slug>/selected_properties.csv      — listings passing the filters
+
+Usage:
+    uv run python process_listings.py
+    uv run python process_listings.py --poi austin-tx
+"""
+
+import argparse
 import json
 import math
+from pathlib import Path
 
 import joblib
 import pandas as pd
 
+from cli import add_poi_args, resolve_poi
 from constants import (
     BEDROOMS,
     BUDGET,
     INTEREST_RATE,
-    LATITUDE,
     LOAN_TERM_MONTHS,
-    LONGITUDE,
     MORTGAGE_COVERAGE_RANGE,
     PROPERTY_TYPES,
     YEAR_MIN,
 )
+from poi import POI
 from rent_estimation_utils import FEATURES, REQUIRED_FEATURES
 
 
@@ -56,7 +69,7 @@ def is_selected(listing: dict) -> bool:
     return True
 
 
-def _load_band(metrics_path: str) -> tuple[float, float]:
+def _load_band(metrics_path: str | Path) -> tuple[float, float]:
     """Return (low_offset, high_offset) so bounds = pred * (1 + offset).
 
     Prefers val-set residual quantiles if recorded; falls back to ±MAPE for
@@ -73,8 +86,8 @@ def _load_band(metrics_path: str) -> tuple[float, float]:
 
 def add_predicted_rent(
     listings: list[dict],
-    model_path: str = "rent_model.joblib",
-    metrics_path: str = "rent_model_metrics.json",
+    model_path: str | Path = "rent_model.joblib",
+    metrics_path: str | Path = "rent_model_metrics.json",
 ) -> list[dict]:
     pipeline = joblib.load(model_path)
     low_offset, high_offset = _load_band(metrics_path)
@@ -104,11 +117,11 @@ def add_predicted_rent(
     return listings
 
 
-def add_distance_to_poi(listings: list[dict]) -> list[dict]:
+def add_distance_to_poi(listings: list[dict], poi_lat: float, poi_lon: float) -> list[dict]:
     for listing in listings:
         lat, lon = listing.get("latitude"), listing.get("longitude")
         if lat is not None and lon is not None:
-            listing["distanceToPoi"] = haversine_miles(lat, lon, LATITUDE, LONGITUDE)
+            listing["distanceToPoi"] = haversine_miles(lat, lon, poi_lat, poi_lon)
         else:
             listing["distanceToPoi"] = None
     return listings
@@ -125,7 +138,7 @@ def add_mortgage_coverage_ratio(listings: list[dict]) -> list[dict]:
     return listings
 
 
-def export_selected_csv(listings: list[dict], output_path: str = "selected_properties.csv") -> None:
+def export_selected_csv(listings: list[dict], output_path: str | Path) -> None:
     selected = [l for l in listings if is_selected(l)]
 
     high, low = MORTGAGE_COVERAGE_RANGE[1], MORTGAGE_COVERAGE_RANGE[0]
@@ -145,13 +158,21 @@ def export_selected_csv(listings: list[dict], output_path: str = "selected_prope
     print(f"Exported {len(df):,} selected listings → {output_path}")
 
 
-def process_sale_listings(input_path: str = "sale_listings.json", output_path: str = "sale_listings_processed.json") -> None:
+def process_sale_listings(
+    input_path: str | Path,
+    output_path: str | Path,
+    model_path: str | Path,
+    metrics_path: str | Path,
+    csv_path: str | Path,
+    poi_lat: float,
+    poi_lon: float,
+) -> None:
     with open(input_path) as f:
         listings = json.load(f)
 
     listings = add_monthly_mortgage(listings)
-    listings = add_predicted_rent(listings)
-    listings = add_distance_to_poi(listings)
+    listings = add_predicted_rent(listings, model_path=model_path, metrics_path=metrics_path)
+    listings = add_distance_to_poi(listings, poi_lat=poi_lat, poi_lon=poi_lon)
     listings = add_mortgage_coverage_ratio(listings)
 
     with open(output_path, "w") as f:
@@ -162,8 +183,28 @@ def process_sale_listings(input_path: str = "sale_listings.json", output_path: s
     with_rent = sum(1 for l in listings if l.get("predictedRent") is not None)
     print(f"Processed {total:,} listings — {selected:,} selected — {with_rent:,} with rent estimate")
 
-    export_selected_csv(listings)
+    export_selected_csv(listings, csv_path)
+
+
+def process_for_poi(poi: POI) -> None:
+    out_dir = poi.output_dir()
+    process_sale_listings(
+        input_path=out_dir / "sale_listings.json",
+        output_path=out_dir / "sale_listings_processed.json",
+        model_path=out_dir / "rent_model.joblib",
+        metrics_path=out_dir / "rent_model_metrics.json",
+        csv_path=out_dir / "selected_properties.csv",
+        poi_lat=poi.latitude,
+        poi_lon=poi.longitude,
+    )
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    add_poi_args(parser)
+    args = parser.parse_args()
+    process_for_poi(resolve_poi(args))
 
 
 if __name__ == "__main__":
-    process_sale_listings()
+    main()

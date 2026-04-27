@@ -17,12 +17,10 @@ def test_residual_quantiles_recorded(tmp_path, monkeypatch, rental_listings_fixt
     model_path = tmp_path / "model.joblib"
     metrics_path = tmp_path / "metrics.json"
 
-    monkeypatch.setattr(rent_model, "MODEL_PATH", str(model_path))
-    monkeypatch.setattr(rent_model, "METRICS_PATH", str(metrics_path))
     monkeypatch.setattr(rent_model, "N_ITER", 2)
     monkeypatch.setattr(rent_model, "CV_FOLDS", 2)
 
-    rent_model.train(str(rental_path))
+    rent_model.train(rental_path, model_path, metrics_path)
 
     assert model_path.exists()
     metrics = json.loads(metrics_path.read_text())
