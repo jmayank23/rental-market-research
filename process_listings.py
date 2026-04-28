@@ -27,6 +27,7 @@ from constants import (
     YEAR_MIN,
 )
 from finance import coverage_ratio, monthly_carrying_cost, monthly_mortgage
+from fmr import fmr_flag, lookup_fmr
 from geo import haversine_miles
 from poi import POI
 from rent_estimation_utils import CAT_FEATURES, FEATURES, REQUIRED_FEATURES
@@ -111,6 +112,23 @@ def add_predicted_rent(
         listing["predictedRentMin"] = max(0, round(p * (1 + low_offset)))
         listing["predictedRentMax"] = max(0, round(p * (1 + high_offset)))
 
+    return listings
+
+
+def add_fmr_check(listings: list[dict]) -> list[dict]:
+    """Cross-check predictedRent against HUD FMR; flag listings with >50% delta.
+
+    Adds three fields to every listing:
+        fmrRent  — county FMR for the listing's bedroom count, or None.
+        fmrDelta — (predictedRent − fmrRent) / fmrRent, or None when no FMR.
+        fmrFlag  — "high" / "low" / "" (pred far above / far below / within band).
+    """
+    for listing in listings:
+        fmr = lookup_fmr(listing.get("county"), listing.get("state"), listing.get("bedrooms"))
+        flag, delta = fmr_flag(listing.get("predictedRent"), fmr)
+        listing["fmrRent"] = fmr
+        listing["fmrDelta"] = delta
+        listing["fmrFlag"] = flag
     return listings
 
 
@@ -229,6 +247,7 @@ def process_sale_listings(
     listings = add_carrying_cost(listings, poi)
     listings = add_distance_to_poi(listings, poi_lat=poi.latitude, poi_lon=poi.longitude)
     listings = add_predicted_rent(listings, model_path=model_path, metrics_path=metrics_path)
+    listings = add_fmr_check(listings)
     listings = add_mortgage_coverage_ratio(listings)
 
     with open(output_path, "w") as f:
@@ -239,8 +258,25 @@ def process_sale_listings(
     with_rent = sum(1 for l in listings if l.get("predictedRent") is not None)
     print(f"Processed {total:,} listings — {selected:,} selected — {with_rent:,} with rent estimate")
     _summarize_cost_flags(listings)
+    _summarize_fmr_flags(listings)
 
     export_selected_csv(listings, csv_path, model_path=model_path)
+
+
+def _summarize_fmr_flags(listings: list[dict]) -> None:
+    """Tell the user how many predictions diverge meaningfully from HUD FMR."""
+    high = sum(1 for l in listings if l.get("fmrFlag") == "high")
+    low = sum(1 for l in listings if l.get("fmrFlag") == "low")
+    no_fmr = sum(1 for l in listings if l.get("fmrRent") is None)
+    if high or low or no_fmr:
+        msg = []
+        if high:
+            msg.append(f"high (pred ≥ 1.5× FMR): {high:,}")
+        if low:
+            msg.append(f"low (pred ≤ 0.5× FMR): {low:,}")
+        if no_fmr:
+            msg.append(f"no FMR data: {no_fmr:,}")
+        print(f"  fmrFlag breakdown: {'; '.join(msg)}")
 
 
 def _summarize_cost_flags(listings: list[dict]) -> None:

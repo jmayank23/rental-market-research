@@ -204,6 +204,36 @@ def test_csv_includes_top_features_when_model_provided(tmp_path, monkeypatch, re
         assert {"feature", "shap", "value"} <= entry.keys()
 
 
+def test_fmr_check_flags_high_predictions():
+    """A predicted rent far above the county FMR triggers fmrFlag='high'."""
+    listings = [{
+        "county": "Jefferson", "state": "AL", "bedrooms": 3,
+        "predictedRent": 4000,  # FY2025 Jefferson AL 3BR FMR is ~$1400
+    }]
+    process_listings.add_fmr_check(listings)
+    assert listings[0]["fmrFlag"] == "high"
+    assert listings[0]["fmrDelta"] > 0.5
+
+
+def test_fmr_check_no_flag_when_county_unknown():
+    listings = [{
+        "county": "Atlantis", "state": "AA", "bedrooms": 3,
+        "predictedRent": 4000,
+    }]
+    process_listings.add_fmr_check(listings)
+    assert listings[0]["fmrRent"] is None
+    assert listings[0]["fmrFlag"] == ""
+
+
+def test_fmr_check_no_flag_when_within_band():
+    listings = [{
+        "county": "Jefferson", "state": "AL", "bedrooms": 3,
+        "predictedRent": 1500,  # close to FY2025 FMR ~$1400
+    }]
+    process_listings.add_fmr_check(listings)
+    assert listings[0]["fmrFlag"] == ""
+
+
 def test_csv_includes_cost_estimate_flags(tmp_path):
     """Listings carry costEstimateFlags surfacing missing cost components."""
     from poi import POI, CostAssumptions
