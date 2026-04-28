@@ -1,0 +1,13 @@
+{
+  "slug": "indianapolis-metro",
+  "name": "Indianapolis Metro (with IN cost assumptions)",
+  "latitude": 39.7684,
+  "longitude": -86.1581,
+  "radius_miles": 25,
+  "cost_assumptions": {
+    "property_tax_rate": 0.0085,
+    "insurance_annual": 1200,
+    "vacancy_rate": 0.06,
+    "maintenance_rate_of_price": 0.01
+  }
+}
