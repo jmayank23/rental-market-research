@@ -1,0 +1,13 @@
+{
+  "slug": "louisville-ky",
+  "name": "Louisville KY",
+  "latitude": 38.2527,
+  "longitude": -85.7585,
+  "radius_miles": 15,
+  "cost_assumptions": {
+    "property_tax_rate": 0.0085,
+    "insurance_annual": 1100,
+    "vacancy_rate": 0.07,
+    "maintenance_rate_of_price": 0.01
+  }
+}

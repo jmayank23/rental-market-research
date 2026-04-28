@@ -1,0 +1,13 @@
+{
+  "slug": "jackson-ms",
+  "name": "Jackson MS",
+  "latitude": 32.2988,
+  "longitude": -90.1848,
+  "radius_miles": 15,
+  "cost_assumptions": {
+    "property_tax_rate": 0.0065,
+    "insurance_annual": 1700,
+    "vacancy_rate": 0.08,
+    "maintenance_rate_of_price": 0.01
+  }
+}

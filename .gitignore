@@ -11,6 +11,10 @@
 # Per-POI generated outputs
 outputs/
 
+# Sweep logs (generated)
+scripts/run_log.txt
+scripts/run_summary.txt
+
 # Python
 __pycache__/
 *.py[cod]
